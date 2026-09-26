@@ -1,0 +1,152 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Head-to-head: 1 example per category (baseline, except p_null_true which
+# already has 2) vs 2 examples per category, run against the SAME 15 sentences
+# -- the original 10 from test_p_ci_ten_sentences.R plus 5 new adversarial
+# sentences deliberately phrased with the SECOND example's anchor words (not
+# the first), to specifically test whether the second example closes a gap
+# the first one leaves open.
+#
+# Runs each sentence through BOTH module versions (saved as plain .R files
+# under the scratchpad dir, not sourced from the live branch file, so this
+# script is a pure A/B comparison and does not depend on -- or modify -- the
+# actual module state) and prints both results side by side.
+#
+# ── HOW TO USE ───────────────────────────────────────────────────────────────
+#   Rscript test_p_ci_1v2_examples.R
+# ─────────────────────────────────────────────────────────────────────────────
+
+metacheck_new_path <- "C:/Users/dlakens/OneDrive - TU Eindhoven/git_repos/metacheck-new"
+
+current_branch <- system2("git", c("-C", shQuote(metacheck_new_path),
+                                   "branch", "--show-current"),
+                          stdout = TRUE)
+if (!identical(current_branch, "p-interpretation-check")) {
+  stop("metacheck-new is on branch '", current_branch, "', not ",
+       "'p-interpretation-check'. Check out that branch first.", call. = FALSE)
+}
+
+devtools::load_all(metacheck_new_path)
+
+llm_use(TRUE)
+llm_cache(FALSE)
+llm_max_calls(40)
+metacheck::llm_model("groq/openai/gpt-oss-20b")
+
+scratch <- "C:/Users/dlakens/AppData/Local/Temp/claude/c--Users-dlakens-OneDrive---TU-Eindhoven-git-repos-metacheck-new/9c0e29b4-b5eb-4b98-896e-dde4b178f77f/scratchpad"
+version_files <- c(
+  "1example" = file.path(scratch, "stat_p_ci_interpretation_1example.R"),
+  "2example" = file.path(scratch, "stat_p_ci_interpretation_2example.R")
+)
+stopifnot(all(file.exists(version_files)))
+
+sentences <- data.frame(
+  id = 1:15,
+  expect = c(
+    "FLAG: ci_prob_of_parameter",
+    "FLAG: ci_representativeness",
+    "FLAG: p_null_true",
+    "FLAG: p_due_to_chance",
+    "FLAG: nonsig_population",
+    "FLAG: p_alpha_error_of_result",
+    "NO FLAG: plain correct reporting",
+    "NO FLAG: CI-overlap heuristic (rephrased)",
+    "NO FLAG: Murphy et al. 'No Misinterpretation' case",
+    "NO FLAG: out-of-scope overclaiming (significance != importance)",
+    "FLAG: ci_confidence_in_realized_interval (2nd-example wording, no 'confident')",
+    "FLAG: ci_property_of_sample (2nd-example wording)",
+    "FLAG: ci_vague (2nd-example wording)",
+    "FLAG: p_data_given_null_incomplete (2nd-example wording)",
+    "FLAG: nonsig_sample (2nd-example wording)"
+  ),
+  expanded = c(
+    "The 95% CI = [0.12, 0.45] means there is a 95% probability that the true effect size falls within this range.",
+    "With a 95% confidence level, we can be confident our sample is representative of the broader population.",
+    "The p-value of .03 indicates a 97% probability that the alternative hypothesis is correct.",
+    "Given the extremely low p-value (p < .001), it is highly unlikely that this result occurred merely by chance.",
+    "Reaction times did not differ significantly between the two conditions, t(45) = 1.20, p = .24, demonstrating that font color has no effect on processing speed.",
+    "Because p < .05, there is less than a 5% chance that this particular finding is a false positive.",
+    "The correlation was significant, r(88) = .34, p = .001, 95% CI [0.15, 0.51].",
+    "Because the confidence intervals for the two groups did not overlap, we concluded the difference was statistically significant.",
+    "The interaction effect was not significant, F(1, 60) = 0.89, p = .35, and no significant effect was found in this analysis.",
+    "The effect was highly significant (p < .001), demonstrating a substantial and meaningful impact on employee wellbeing.",
+    "There is a 95% chance the true mean difference is between 1.2 and 3.8.",
+    "The narrow 95% CI shows the sample had low variability in response times.",
+    "A confidence interval gives a plausible range for the population parameter.",
+    "The p-value tells us how likely our exact results would be if there were truly no effect.",
+    "The two groups showed no measurable difference in this study, t(38) = 0.9, p = .37."
+  ),
+  stat_text = c("95% CI", "95% confidence level", "p = .03", "p < .001",
+               "p = .24", "p < .05", "p = .001", "CI overlap", "p = .35",
+               "p < .001", "95% chance", "95% CI", "confidence interval",
+               "p-value", "p = .37"),
+  stringsAsFactors = FALSE
+)
+
+anti_forcing <- paste(
+  "Only flag a sentence as misinterpreted if it makes an actual claim about",
+  "what the p value or confidence interval MEANS, and that claim's LOGICAL",
+  "STRUCTURE -- not just its vocabulary -- matches one of the categories",
+  "above. Quote the exact claim first (quoted_claim), then check whether",
+  "THAT SPECIFIC WORDING commits the error the category describes. A",
+  "sentence using CI/p-value terminology without making the category's",
+  "specific wrong claim is NOT a misinterpretation, even if a category",
+  "sounds topically related -- e.g. 'nonoverlapping confidence intervals",
+  "indicate a significant difference' is a directionally CORRECT informal",
+  "heuristic, not a misinterpretation, even though it mentions confidence",
+  "intervals. Do NOT flag a sentence merely for reporting the number, for",
+  "using loose/informal language that does not amount to one of these",
+  "specific errors, for drawing a broader conclusion (e.g. 'this shows a",
+  "strong effect'), or for a different kind of statistical concern (e.g.",
+  "dichotomous significance language) -- those are out of scope for this",
+  "check. If the sentence only reports the statistic without making a claim",
+  "about its meaning, treat that as NOT misinterpreted. When genuinely",
+  "uncertain whether the quoted claim fits a category's exact logical",
+  "structure, prefer NOT misinterpreted over forcing a near-fit label, and",
+  "give a lower confidence score."
+)
+
+run_version <- function(version_label, file_path) {
+  env <- new.env()
+  sys.source(file_path, envir = env)
+  cats <- env$.p_ci_categories()
+  cat_list <- paste(sprintf("- %s: %s", names(cats), cats), collapse = "\n")
+  structured_prompt <- paste0(
+    "You will see a sentence from a scientific manuscript that reports a p value or a confidence interval (CI). Judge whether the sentence's own DEFINITION OR USE of what that p value or confidence interval MEANS is technically correct, per the specific misinterpretation categories below (from Bergwerff, Corten, & van Batenburg-Eddes's compendium of real misinterpretations found in technical guidance documents, grounded in Morey et al. 2016's correct definition of a confidence interval).\n\n",
+    "Categories:\n", cat_list, "\n\n",
+    anti_forcing
+  )
+  type_spec <- env$.p_ci_type_spec()
+
+  message("\n===== VERSION: ", version_label, " (prompt length: ",
+         nchar(structured_prompt), " chars) =====")
+
+  rows <- vector("list", nrow(sentences))
+  for (i in seq_len(nrow(sentences))) {
+    row <- sentences[i, ]
+    one_row <- data.frame(expanded = row$expanded, stat_text = row$stat_text,
+                          stringsAsFactors = FALSE)
+    t0 <- Sys.time()
+    res <- tryCatch(
+      llm(text = one_row, system_prompt = structured_prompt, type = type_spec,
+          text_col = "expanded", model = llm_model(),
+          params = list(seed = 8675309 + i)),
+      error = function(e) { message("  ! ERROR [", i, "]: ", conditionMessage(e)); NULL }
+    )
+    elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+    if (!is.null(res)) {
+      message(sprintf("[%2d] %-70s -> misinterpreted=%-5s type=%-38s conf=%.2f (%.1fs)",
+                      i, substr(row$expect, 1, 70), res$misinterpreted,
+                      as.character(res$misinterpretation_type) %||% "NA",
+                      res$confidence %||% NA, elapsed))
+    }
+    rows[[i]] <- list(id = row$id, expect = row$expect, result = res, elapsed = elapsed)
+  }
+  rows
+}
+
+results_1ex <- run_version("1example", version_files[["1example"]])
+results_2ex <- run_version("2example", version_files[["2example"]])
+
+saveRDS(list(v1 = results_1ex, v2 = results_2ex, sentences = sentences),
+       "C:/Users/dlakens/OneDrive - TU Eindhoven/git_repos/metacheck-testing/_p_ci_1v2_examples_result.rds")
+message("\nSaved to: _p_ci_1v2_examples_result.rds")
